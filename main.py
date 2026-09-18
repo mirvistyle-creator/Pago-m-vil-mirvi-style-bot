@@ -1,15 +1,14 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, Response, status
 from pydantic import BaseModel
 import httpx
 import re
 
 app = FastAPI()
 
-# Token de tu Bot de Telegram
 TOKEN = "8877460148:AAFCj67-o34iLWiKvdVEltCVYjJiAP4eM7I"
-TELEGRAM_API = f"https://telegram.org{TOKEN}"
+TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
-# Diccionario temporal en memoria para almacenar pagos recibidos
+# Base de datos en memoria para guardar los pagos capturados por el teléfono
 pagos_recibidos = {}
 
 class SMSData(BaseModel):
@@ -17,7 +16,7 @@ class SMSData(BaseModel):
 
 @app.get("/")
 def inicio():
-    return {"status": "servidor_activo", "mensaje": "Validador de Pago Movil BDV en linea"}
+    return {"status": "servidor_activo", "mensaje": "Validador en linea"}
 
 @app.post("/webhook-sms")
 async def recibir_sms(data: SMSData):
@@ -31,48 +30,50 @@ async def recibir_sms(data: SMSData):
             "monto": monto_limpio,
             "usado": False
         }
-        return {"status": "success", "referencia": referencia, "monto": monto_limpio}
+        return {"status": "success", "referencia": referencia}
     except AttributeError:
-        return {"status": "ignored", "reason": "SMS no corresponde a un formato valido de BDV"}
+        return {"status": "ignored"}
 
 @app.post("/webhook-telegram")
 async def webhook_telegram(request: Request):
-    """Procesa las interacciones de Telegram usando peticiones HTTP directas"""
-    data = await request.json()
-    
+    """Procesa los mensajes directos de Telegram"""
+    try:
+        data = await request.json()
+    except Exception:
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+        
     if "message" in data and "text" in data["message"]:
         chat_id = data["message"]["chat"]["id"]
         texto_usuario = data["message"]["text"].strip()
         
         async with httpx.AsyncClient() as client:
             # Comando /start
-            if texto_usuario == "/start":
+            if texto_usuario.startswith("/start"):
                 mensaje_bienvenida = (
                     "👋 ¡Hola! Bienvenido al sistema automatizado de verificación de pagos.\n\n"
-                    "Para validar tu Pago Móvil, por favor envíame el **Número de Referencia** de tu transacción.\n\n"
-                    "Escribe los números directamente en el chat para procesar la verificación."
+                    "Para validar tu Pago Móvil, por favor envíame el **Número de Referencia** de tu transacción."
                 )
                 await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": mensaje_bienvenida, "parse_mode": "Markdown"})
                 return {"ok": True}
             
-            # Buscar número de referencia de 6 a 12 dígitos
+            # Buscar número de referencia de 6 a 12 dígitos en el mensaje
             match_ref = re.search(r"\b(\d{6,12})\b", texto_usuario)
             if not match_ref:
-                mensaje_error = "❌ No logré identificar un número de referencia válido.\nPor favor, envíame únicamente los números de la referencia de tu pago (de 6 a 12 dígitos)."
+                mensaje_error = "❌ No logré identificar una referencia válida.\nPor favor, envíame solo los números de tu referencia (de 6 a 12 dígitos)."
                 await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": mensaje_error})
                 return {"ok": True}
                 
             referencia = match_ref.group(1)
             
-            # Verificación del pago
+            # Validación interna contra el diccionario de pagos
             if referencia in pagos_recibidos:
                 pago = pagos_recibidos[referencia]
                 if pago["usado"]:
-                    await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": "⚠️ Esta referencia ya fue registrada y utilizada previamente para otro pago."})
+                    await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": "⚠️ Esta referencia ya fue registrada previamente para otro pago."})
                 else:
                     pago["usado"] = True
                     monto_pago = pago["monto"]
-                    mensaje_exito = f"✅ ¡Pago Verificado Exitosamente!\n\n🔹 **Referencia:** {referencia}\n🔹 **Monto:** Bs. {monto_pago}\n\n¡Tu orden o servicio ha sido procesado con éxito!"
+                    mensaje_exito = f"✅ ¡Pago Verificado Exitosamente!\n\n🔹 **Referencia:** {referencia}\n🔹 **Monto:** Bs. {monto_pago}\n\n¡Tu orden ha sido procesada!"
                     await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": mensaje_exito})
             else:
                 mensaje_no_encontrado = f"🔍 Buscando la referencia **{referencia}**...\n\n❌ Aún no hemos recibido la notificación de este pago en nuestra cuenta bancaria.\n\nIntenta nuevamente en unos minutos."
