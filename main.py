@@ -2,11 +2,8 @@ from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from contextlib import asynccontextmanager
 import re
-import os
-import asyncio
-
-app = FastAPI()
 
 # Token de tu Bot de Telegram
 TOKEN = "8877460148:AAFCj67-o34iLWiKvdVEltCVYjJiAP4eM7I"
@@ -16,9 +13,27 @@ BASE_URL = "https://onrender.com"
 # Diccionario temporal en memoria para almacenar pagos recibidos
 pagos_recibidos = {}
 
-# Inicialización de la aplicación de Telegram
+# Inicialización de la aplicación de Telegram y el Bot
 telegram_app = Application.builder().token(TOKEN).build()
 bot = Bot(token=TOKEN)
+
+# --- CONFIGURACIÓN DE LIFESPAN (Arranque moderno de FastAPI) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Código que se ejecuta al arrancar el servidor
+    await telegram_app.initialize()
+    await telegram_app.start()
+    # Conecta tu bot directamente con los servidores de Telegram
+    await bot.set_webhook(url=f"{BASE_URL}/webhook-telegram")
+    
+    yield  # Aquí es donde el servidor se queda escuchando peticiones
+    
+    # Código que se ejecuta al apagarse el servidor
+    await telegram_app.stop()
+    await telegram_app.shutdown()
+
+# Creamos la aplicación FastAPI asignándole el gestor de ciclo de vida
+app = FastAPI(lifespan=lifespan)
 
 class SMSData(BaseModel):
     mensaje: str
@@ -47,7 +62,7 @@ async def recibir_sms(data: SMSData):
         }
         return {"status": "success", "referencia": referencia, "monto": monto_limpio}
     except AttributeError:
-        return {"status": "ignored", "reason": "El SMS no corresponde a un formato valido de pago BDV"}
+        return {"status": "ignored", "reason": "El SMS no contiene un formato valido de pago BDV"}
 
 @app.post("/webhook-telegram")
 async def webhook_telegram(request: Request):
@@ -63,8 +78,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mensaje de bienvenida al presionar /start"""
     texto_bienvenida = (
         "👋 ¡Hola! Bienvenido al sistema automatizado de verificación de pagos.\n\n"
-        "Para validar tu Pago Móvil, por favor envíame el **Número de Referencia** de la transacción seguido del monto.\n\n"
-        "**Ejemplo de uso:** Envía el número de referencia directamente en el chat."
+        "Para validar tu Pago Móvil, por favor envíame el **Número de Referencia** de tu transacción.\n\n"
+        "Escribe los números directamente en el chat para procesar la verificación."
     )
     await update.message.reply_text(texto_bienvenida, parse_mode="Markdown")
 
@@ -84,7 +99,7 @@ async def procesar_mensaje_usuario(update: Update, context: ContextTypes.DEFAULT
         
     referencia = match_ref.group(1)
     
-    # Simulación de verificación (puedes ajustar el flujo para exigir montos exactos si lo deseas)
+    # Verificación de la referencia registrada en memoria
     if referencia in pagos_recibidos:
         pago = pagos_recibidos[referencia]
         
@@ -92,7 +107,7 @@ async def procesar_mensaje_usuario(update: Update, context: ContextTypes.DEFAULT
             await update.message.reply_text("⚠️ Esta referencia ya fue registrada y utilizada previamente para otro pago.")
             return
             
-        # Marcamos el pago como aprobado
+        # Marcamos el pago como aprobado para prevenir doble uso
         pago["usado"] = True
         monto_pago = pago["monto"]
         
@@ -112,18 +127,3 @@ async def procesar_mensaje_usuario(update: Update, context: ContextTypes.DEFAULT
 # Configuración de los comandos del Bot
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, procesar_mensaje_usuario))
-
-# --- EVENTOS DE ARRANQUE DEL SERVIDOR ---
-
-@app.on_event("startup")
-async def startup_event():
-    """Configura el Webhook en los servidores de Telegram al arrancar Render"""
-    await telegram_app.initialize()
-    await telegram_app.start()
-    # Le dice a Telegram a dónde debe mandar los mensajes
-    await bot.set_webhook(url=f"{BASE_URL}/webhook-telegram")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await telegram_app.stop()
-    await telegram_app.shutdown()
