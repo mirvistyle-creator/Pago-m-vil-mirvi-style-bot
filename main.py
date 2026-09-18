@@ -5,11 +5,12 @@ import re
 
 app = FastAPI()
 
-TOKEN = "8877460148:AAFCj67-o34iLWiKvdVEltCVYjJiAP4eM7I"
-TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
+# Tu nuevo Token limpio y tu enlace oficial de Render
+TOKEN = "8715321676:AAFSeZupHZrp4zT_qxRJ8UzkN27k55JL6B4"
+TELEGRAM_API = f"https://telegram.org{TOKEN}"
 BASE_URL = "https://onrender.com"
 
-# Base de datos en memoria para guardar los pagos capturados por el teléfono
+# Base de datos en memoria para guardar las referencias de Pago Móvil del teléfono
 pagos_recibidos = {}
 
 class SMSData(BaseModel):
@@ -17,16 +18,14 @@ class SMSData(BaseModel):
 
 @app.get("/")
 def inicio():
-    return {"status": "servidor_activo", "mensaje": "Validador Directo Mirvi Style"}
+    return {"status": "servidor_activo", "mensaje": "Validador Directo Mirvi Style Activo"}
 
 @app.get("/activar-bot")
 def activar_bot():
-    """Interruptor manual para conectar Telegram con tu servidor de Render sin bloqueos"""
+    """Interruptor manual para conectar Telegram con Render sin bloqueos de red"""
     url_webhook = f"{BASE_URL}/webhook-telegram"
     try:
-        # Borra cualquier enlace viejo bloqueado
         requests.get(f"{TELEGRAM_API}/deleteWebhook")
-        # Establece la nueva conexión limpia
         response = requests.get(f"{TELEGRAM_API}/setWebhook", params={"url": url_webhook})
         return {"status": "proceso_completado", "respuesta_telegram": response.json()}
     except Exception as e:
@@ -36,6 +35,7 @@ def activar_bot():
 def recibir_sms(data: SMSData):
     texto = data.mensaje
     try:
+        # Captura los datos oficiales del mensaje del Banco de Venezuela (BDV)
         referencia = re.search(r"Ref:\s*(\d+)", texto).group(1)
         monto_str = re.search(r"Bs\.\s*([\d\.,]+)", texto).group(1)
         monto_limpio = monto_str.replace(".", "")
@@ -50,6 +50,7 @@ def recibir_sms(data: SMSData):
 
 @app.post("/webhook-telegram")
 async def webhook_telegram(request: Request):
+    """Procesa los mensajes enviados por tus clientes en el nuevo Bot"""
     try:
         data = await request.json()
     except Exception:
@@ -59,7 +60,7 @@ async def webhook_telegram(request: Request):
         chat_id = data["message"]["chat"]["id"]
         texto_usuario = data["message"]["text"].strip()
         
-        # Comando /start
+        # Comando /start en el chat
         if texto_usuario.startswith("/start"):
             mensaje_bienvenida = (
                 "👋 ¡Hola! Bienvenido al sistema automatizado de verificación de pagos.\n\n"
@@ -68,7 +69,7 @@ async def webhook_telegram(request: Request):
             requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": mensaje_bienvenida})
             return {"ok": True}
         
-        # Buscar número de referencia de 6 a 12 dígitos
+        # Filtra que el usuario mande una referencia de 6 a 12 dígitos
         match_ref = re.search(r"\b(\d{6,12})\b", texto_usuario)
         if not match_ref:
             mensaje_error = "❌ No logré identificar una referencia válida.\nPor favor, envíame solo los números de tu referencia (de 6 a 12 dígitos)."
@@ -77,7 +78,7 @@ async def webhook_telegram(request: Request):
             
         referencia = match_ref.group(1)
         
-        # Validación interna contra la memoria
+        # Validación cruzada contra la memoria del servidor
         if referencia in pagos_recibidos:
             pago = pagos_recibidos[referencia]
             if pago["usado"]:
